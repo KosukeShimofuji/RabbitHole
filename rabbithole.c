@@ -25,7 +25,8 @@ void chomp(char *str){
 }
 
 void scan(char *socks_ipaddr, char *socks_port, char *signature, 
-        char *uri_proto, char *uri_hostname, char *uri_ipaddr, char *uri_path){
+        char *uri_proto, char *uri_hostname, char *uri_ipaddr, char *uri_path,
+        int domain_resolution_flag){
     struct sockaddr_in addr;
     int sock;
     struct timeval tv;
@@ -43,10 +44,10 @@ void scan(char *socks_ipaddr, char *socks_port, char *signature,
         exit(EXIT_FAILURE);
     }
 
-    tv.tv_sec = 10;
-    tv.tv_usec = 0;
+    //tv.tv_sec = 10;
+    //tv.tv_usec = 0;
 
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv, sizeof(tv));
+    //setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv, sizeof(tv));
 
     addr.sin_family = AF_INET;
     addr.sin_port = htons(atoi(socks_port));
@@ -76,20 +77,32 @@ void scan(char *socks_ipaddr, char *socks_port, char *signature,
             goto CONNECTION_END;
         }
 
-        char second_request[MAX_BUF] = {
-            0x05, /* socks version */
-            0x01, /* connect method */
-            0x00, /* reserved */
-            0x01  /* ip v4 */
-        };
+        char second_request[MAX_BUF];
 
-        addr.sin_port = htons(443);
-        addr.sin_addr.s_addr = inet_addr(uri_ipaddr);
-        memcpy(second_request + 4, &addr.sin_addr.s_addr, 4);
-        memcpy(second_request + 8, &addr.sin_port, 2);
-        send(sock, second_request, 10, 0);
+        if(domain_resolution_flag){
+            second_request[0] = 0x05; /* socks version */
+            second_request[1] = 0x01; /* connect method */
+            second_request[2] = 0x00; /* reserved */
+            second_request[3] = 0x03; /* FQDN */
+            addr.sin_port = htons(443);
+            int uri_hostname_len = strlen(uri_hostname);
+            second_request[4] = uri_hostname_len;
+            memcpy(second_request + 5, uri_hostname, uri_hostname_len);
+            memcpy(second_request + 5 + uri_hostname_len, &addr.sin_port, 2);
+            send(sock, second_request, 5 + uri_hostname_len + 2, 0);
+        }else{
+            second_request[0] = 0x05; /* socks version */
+            second_request[1] = 0x01; /* connect method */
+            second_request[2] = 0x00; /* reserved */
+            second_request[3] = 0x01; /* IPv4 */
+            addr.sin_port = htons(443);
+            addr.sin_addr.s_addr = inet_addr(uri_ipaddr);
+            memcpy(second_request + 4, &addr.sin_addr.s_addr, 4);
+            memcpy(second_request + 8, &addr.sin_port, 2);
+            send(sock, second_request, 10, 0);
+        }
+
         memset(recv_buf, '\0', MAX_BUF);
-
         recv_len = recv(sock, recv_buf, 10, 0);
 
         if ( recv_len <= 0 ){
@@ -192,15 +205,16 @@ void uriparse(char *uri, char **uri_proto, char **uri_hostname, char **uri_path)
 
 int main(int argc, char *argv[]){
     int opts;
-    char *target_list;
-    char *uri;
-    char *signature;
+    int domain_resolution_flag = 0;
+    char *target_list = NULL;
+    char *uri = NULL;
+    char *signature = NULL;
     FILE *fp;
     char line[MAX_BUF];
     char *uri_proto, *uri_hostname, *uri_ipaddr, *uri_path;
     struct hostent* uri_hostent;
 
-    while((opts=getopt(argc, argv, "l:u:s:")) != -1){
+    while((opts=getopt(argc, argv, "l:u:s:d")) != -1){
         switch(opts){
             case 'l':
                 target_list = optarg;
@@ -210,6 +224,9 @@ int main(int argc, char *argv[]){
                 break;
             case 's':
                 signature = optarg;
+                break;
+            case 'd':
+                domain_resolution_flag = 1;
                 break;
             default:
                 printf("error! %c %c\n", opts, optarg);
@@ -221,7 +238,11 @@ int main(int argc, char *argv[]){
        uri == NULL ||
        signature == NULL 
     ){
-        printf("Usage %s -l list -u https_url -s signature\n", argv[0]);
+        printf("Usage %s -l list -u https_url -s signature [-d]\n", argv[0]);
+        printf("-l target list\n");
+        printf("-u https url\n");
+        printf("-s signature\n");
+        printf("-d domain resolution on socks proxy(Improvement of anonymity)\n");
         exit(EXIT_SUCCESS);
     }
 
@@ -238,14 +259,16 @@ int main(int argc, char *argv[]){
         fprintf(stderr, "[+] URI_PATH : %s\n", uri_path);
     }
 
-    uri_hostent = gethostbyname(uri_hostname);
-    if(uri_hostent == NULL){
-        perror("gethostbyname");
-        exit(EXIT_FAILURE);
-    }
+    if(domain_resolution_flag == 0){
+        uri_hostent = gethostbyname(uri_hostname);
+        if(uri_hostent == NULL){
+            perror("gethostbyname");
+            exit(EXIT_FAILURE);
+        }
 
-    uri_ipaddr = inet_ntoa(*(struct in_addr*)(uri_hostent->h_addr_list[0])); 
-    fprintf(stderr, "[+] URI_IPADDR : %s\n", uri_ipaddr);
+        uri_ipaddr = inet_ntoa(*(struct in_addr*)(uri_hostent->h_addr_list[0])); 
+        fprintf(stderr, "[+] URI_IPADDR : %s\n", uri_ipaddr);
+    }
 
     if((fp = fopen(target_list, "r")) == NULL){
         perror("fopen");
@@ -257,7 +280,8 @@ int main(int argc, char *argv[]){
         chomp(line);
         socks_ipaddr = strtok(line, ":");
         socks_port = strtok(NULL, ":");
-        scan(socks_ipaddr, socks_port, signature, uri_proto, uri_hostname, uri_ipaddr, uri_path);
+        scan(socks_ipaddr, socks_port, signature, uri_proto, 
+             uri_hostname, uri_ipaddr, uri_path, domain_resolution_flag);
     } 
 
     free(uri_proto);
