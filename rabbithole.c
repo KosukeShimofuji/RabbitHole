@@ -41,12 +41,11 @@ void socks_scan(char *socks_ipaddr, char *socks_port, char *signature,
     int sock;
     struct timeval tv;
     char recv_buf[MAX_BUF];
-    char header[MAX_BUF*2];
-    int recv_len, err;
+    char send_buf[MAX_BUF];
+    int recv_len, send_len, err;
     SSL *ssl;
     SSL_CTX *ctx;
     clock_t start_time, end_time;
-    char second_request[MAX_BUF];
 
     start_time = clock();
 
@@ -68,87 +67,89 @@ void socks_scan(char *socks_ipaddr, char *socks_port, char *signature,
         goto CONNECTION_END;
     };
 
-    char first_request[] = {
-        0x05, /* socks version */
-        0x01, /* auth list num */
-        0x00  /* unencessary authentication */
-    };
+    send_buf[0] = 0x05; /* socks version */
+    send_buf[1] = 0x01; /* auth list num */
+    send_buf[2] = 0x00; /* unnecessary authentication */
 
-    send(sock, first_request, sizeof(first_request), 0);
+    send(sock, send_buf, 3, 0);
     recv_len = recv(sock, recv_buf, MAX_BUF, 0);
 
-    if( recv_len > 0 ){
-        if(recv_buf[0] != 0x05){
-            printf("[!] Invalid socks version\n");
-            goto CONNECTION_END;
-        }
-        if(recv_buf[1] != 0x00){
-            printf("[!] Invalid authentication method\n");
-            goto CONNECTION_END;
-        }
-
-        if(domain_resolution_flag){
-            second_request[0] = 0x05; /* socks version */
-            second_request[1] = 0x01; /* connect method */
-            second_request[2] = 0x00; /* reserved */
-            second_request[3] = 0x03; /* FQDN */
-            addr.sin_port = htons(443);
-            int uri_hostname_len = strlen(uri_hostname);
-            second_request[4] = uri_hostname_len;
-            memcpy(second_request + 5, uri_hostname, uri_hostname_len);
-            memcpy(second_request + 5 + uri_hostname_len, &addr.sin_port, 2);
-            send(sock, second_request, 5 + uri_hostname_len + 2, 0);
-        }else{
-            second_request[0] = 0x05; /* socks version */
-            second_request[1] = 0x01; /* connect method */
-            second_request[2] = 0x00; /* reserved */
-            second_request[3] = 0x01; /* IPv4 */
-            addr.sin_port = htons(443);
-            addr.sin_addr.s_addr = inet_addr(uri_ipaddr);
-            memcpy(second_request + 4, &addr.sin_addr.s_addr, 4);
-            memcpy(second_request + 8, &addr.sin_port, 2);
-            send(sock, second_request, 10, 0);
-        }
-
-        memset(recv_buf, '\0', MAX_BUF);
-        recv_len = recv(sock, recv_buf, 10, 0);
-
-        if ( recv_len <= 0 ){
-            goto CONNECTION_END;
-        }
-
-        SSL_load_error_strings();
-        SSL_library_init();
-        ctx = SSL_CTX_new(SSLv23_client_method());
-        ssl = SSL_new(ctx);
-        err = SSL_set_fd(ssl, sock);
-        SSL_connect(ssl);
-
-        sprintf(header, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n", 
-                uri_path, uri_hostname);
-        SSL_write(ssl, header, strlen(header));
-
-        int buf_size = 256;
-        char buf[buf_size];
-        int read_size;
-
-        do {
-            read_size = SSL_read(ssl, buf, buf_size);
-            //write(1, buf, read_size);
-        } while(read_size > 0);
-
-        end_time = clock();
-
-        if(strstr(buf, signature) != NULL){
-           printf("Success %dms %s:%s\n", 
-                   end_time - start_time, socks_ipaddr, socks_port);
-        }
-
-        SSL_shutdown(ssl);
-        SSL_free(ssl);
-        SSL_CTX_free(ctx);
-        ERR_free_strings();
+    if( recv_len <= 0 ){
+        goto CONNECTION_END;
     }
+
+    if(recv_buf[0] != 0x05){
+        printf("[!] Invalid socks version\n");
+        goto CONNECTION_END;
+    }
+    if(recv_buf[1] != 0x00){
+        printf("[!] Invalid authentication method\n");
+        goto CONNECTION_END;
+    }
+
+    memset(send_buf, 0x00, sizeof(send_buf));
+
+    if(domain_resolution_flag){
+        send_buf[0] = 0x05; /* socks version */
+        send_buf[1] = 0x01; /* connect method */
+        send_buf[2] = 0x00; /* reserved */
+        send_buf[3] = 0x03; /* FQDN */
+        addr.sin_port = htons(443);
+        int uri_hostname_len = strlen(uri_hostname);
+        send_buf[4] = uri_hostname_len;
+        memcpy(send_buf + 5, uri_hostname, uri_hostname_len);
+        memcpy(send_buf + 5 + uri_hostname_len, &addr.sin_port, 2);
+        send(sock, send_buf, 5 + uri_hostname_len + 2, 0);
+    }else{
+        send_buf[0] = 0x05; /* socks version */
+        send_buf[1] = 0x01; /* connect method */
+        send_buf[2] = 0x00; /* reserved */
+        send_buf[3] = 0x01; /* IPv4 */
+        addr.sin_port = htons(443);
+        addr.sin_addr.s_addr = inet_addr(uri_ipaddr);
+        memcpy(send_buf + 4, &addr.sin_addr.s_addr, 4);
+        memcpy(send_buf + 8, &addr.sin_port, 2);
+        send(sock, send_buf, 10, 0);
+    }
+
+    memset(recv_buf, 0x00, sizeof(recv_buf));
+    recv_len = recv(sock, recv_buf, MAX_BUF, 0);
+
+    if ( recv_len <= 0 ){
+        goto CONNECTION_END;
+    }
+
+    SSL_load_error_strings();
+    SSL_library_init();
+    ctx = SSL_CTX_new(SSLv23_client_method());
+    ssl = SSL_new(ctx);
+    err = SSL_set_fd(ssl, sock);
+    SSL_connect(ssl);
+
+    memset(send_buf, 0x00, sizeof(send_buf));
+    sprintf(send_buf, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n", 
+            uri_path, uri_hostname);
+    SSL_write(ssl, send_buf, strlen(send_buf));
+
+    memset(recv_buf, 0x00, sizeof(recv_buf));
+    recv_len = 0;
+
+    do {
+        recv_len = SSL_read(ssl, recv_buf, MAX_BUF);
+        //write(1, recv_buf, recv_len);
+    } while(recv_len > 0);
+
+    end_time = clock();
+
+    if(strstr(recv_buf, signature) != NULL){
+        printf("[SOCKS_PROXY] %dms %s:%s\n", 
+                end_time - start_time, socks_ipaddr, socks_port);
+    }
+
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    ERR_free_strings();
 
     CONNECTION_END:
     close(sock);
