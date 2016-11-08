@@ -162,12 +162,10 @@ void https_scan(char *https_ipaddr, char *https_port, char *signature,
     struct timeval tv;
     char send_buf[MAX_BUF];
     char recv_buf[MAX_BUF];
-    char header[MAX_BUF*2];
-    int recv_len, err;
+    int send_len, recv_len, err;
     SSL *ssl;
     SSL_CTX *ctx;
     clock_t start_time, end_time;
-    char second_request[MAX_BUF];
 
     start_time = clock();
 
@@ -176,9 +174,9 @@ void https_scan(char *https_ipaddr, char *https_port, char *signature,
         exit(EXIT_FAILURE);
     }
 
-    tv.tv_sec = 10;
-    tv.tv_usec = 0;
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv, sizeof(tv));
+    //tv.tv_sec = 10;
+    //tv.tv_usec = 0;
+    //setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv, sizeof(tv));
 
     addr.sin_family = AF_INET;
     addr.sin_port = htons(atoi(https_port));
@@ -189,40 +187,50 @@ void https_scan(char *https_ipaddr, char *https_port, char *signature,
         goto CONNECTION_END;
     };
 
-    sprintf(send_buf, "CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\nUser-Agent: RabbitHole\r\nProxy-Connection: Keep-Alive\r\n\r\n", uri_hostname, 443, uri_hostname, 443);
+    sprintf(send_buf, 
+            "CONNECT %s:%d HTTP/1.1\r\n"
+            "Host: %s:%d\r\n"
+            "User-Agent: RabbitHole\r\n"
+            "Proxy-Connection: Keep-Alive\r\n"
+            "\r\n", 
+            uri_hostname, 443, uri_hostname, 443);
     send(sock, send_buf, strlen(send_buf), 0);
     recv_len = recv(sock, recv_buf, MAX_BUF, 0);
-    if( recv_len > 0 ){
-        SSL_load_error_strings();
-        SSL_library_init();
-        ctx = SSL_CTX_new(SSLv23_client_method());
-        ssl = SSL_new(ctx);
-        err = SSL_set_fd(ssl, sock);
-        SSL_connect(ssl);
-        sprintf(header, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n", uri_path, uri_hostname);
-        SSL_write(ssl, header, strlen(header));
 
-        int buf_size = 256;
-        char buf[buf_size];
-        int read_size;
-
-        do {
-             read_size = SSL_read(ssl, buf, buf_size);
-             //write(1, buf, read_size);
-        } while(read_size > 0);
-
-        end_time = clock();
-
-        if(strstr(buf, signature) != NULL){
-            printf("Success %dms %s:%s\n", 
-                   end_time - start_time, https_ipaddr, https_port);
-         }
-
-        SSL_shutdown(ssl);
-        SSL_free(ssl);
-        SSL_CTX_free(ctx);
-        ERR_free_strings();
+    if( recv_len <= 0 ){
+        goto CONNECTION_END;
     }
+
+    memset(send_buf, 0x00, sizeof(send_buf));
+
+    SSL_load_error_strings();
+    SSL_library_init();
+    ctx = SSL_CTX_new(SSLv23_client_method());
+    ssl = SSL_new(ctx);
+    err = SSL_set_fd(ssl, sock);
+    SSL_connect(ssl);
+    sprintf(send_buf, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n", uri_path, uri_hostname);
+    SSL_write(ssl, send_buf, strlen(send_buf));
+
+    memset(recv_buf, 0x00, sizeof(recv_buf));
+    recv_len = 0;
+
+    do {
+        recv_len = SSL_read(ssl, recv_buf, MAX_BUF);
+        //write(1, buf, read_size);
+    } while(recv_len > 0);
+
+    end_time = clock();
+
+    if(strstr(recv_buf, signature) != NULL){
+        printf("[HTTPS PROXY] %dms %s:%s\n", 
+                end_time - start_time, https_ipaddr, https_port);
+    }
+
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    ERR_free_strings();
 
     CONNECTION_END:
     close(sock);
