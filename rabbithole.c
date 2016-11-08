@@ -15,6 +15,16 @@
 
 #define MAX_BUF 256
 
+void usage(){
+    printf("Usage RabbtHole -l list -u https_url -s signature -m [https|socks] [-d]\n");
+    printf("-l target list\n");
+    printf("-u https url\n");
+    printf("-s signature\n");
+    printf("-m mode choice [https|socks]\n");
+    printf("-d domain resolution on socks proxy(Improvement of anonymity)\n");
+    exit(EXIT_SUCCESS);
+} 
+
 void chomp(char *str){
     int len;
     len = strlen(str);
@@ -24,7 +34,7 @@ void chomp(char *str){
     return;
 }
 
-void scan(char *socks_ipaddr, char *socks_port, char *signature, 
+void socks_scan(char *socks_ipaddr, char *socks_port, char *signature, 
         char *uri_proto, char *uri_hostname, char *uri_ipaddr, char *uri_path,
         int domain_resolution_flag){
     struct sockaddr_in addr;
@@ -36,6 +46,7 @@ void scan(char *socks_ipaddr, char *socks_port, char *signature,
     SSL *ssl;
     SSL_CTX *ctx;
     clock_t start_time, end_time;
+    char second_request[MAX_BUF];
 
     start_time = clock();
 
@@ -46,7 +57,6 @@ void scan(char *socks_ipaddr, char *socks_port, char *signature,
 
     //tv.tv_sec = 10;
     //tv.tv_usec = 0;
-
     //setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv, sizeof(tv));
 
     addr.sin_family = AF_INET;
@@ -76,8 +86,6 @@ void scan(char *socks_ipaddr, char *socks_port, char *signature,
             printf("[!] Invalid authentication method\n");
             goto CONNECTION_END;
         }
-
-        char second_request[MAX_BUF];
 
         if(domain_resolution_flag){
             second_request[0] = 0x05; /* socks version */
@@ -146,6 +154,80 @@ void scan(char *socks_ipaddr, char *socks_port, char *signature,
     close(sock);
 }
 
+void https_scan(char *https_ipaddr, char *https_port, char *signature, 
+        char *uri_proto, char *uri_hostname, char *uri_ipaddr, char *uri_path){
+    struct sockaddr_in addr;
+    int sock;
+    struct timeval tv;
+    char send_buf[MAX_BUF];
+    char recv_buf[MAX_BUF];
+    char header[MAX_BUF*2];
+    int recv_len, err;
+    SSL *ssl;
+    SSL_CTX *ctx;
+    clock_t start_time, end_time;
+    char second_request[MAX_BUF];
+
+    start_time = clock();
+
+    if((sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1){
+        perror("socket");
+        exit(EXIT_FAILURE);
+    }
+
+    tv.tv_sec = 10;
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv, sizeof(tv));
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(atoi(https_port));
+    addr.sin_addr.s_addr = inet_addr(https_ipaddr);
+
+    if(connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == -1){
+        perror("connect");
+        goto CONNECTION_END;
+    };
+
+    sprintf(send_buf, "CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\nUser-Agent: RabbitHole\r\nProxy-Connection: Keep-Alive\r\n\r\n", uri_hostname, 443, uri_hostname, 443);
+    send(sock, send_buf, strlen(send_buf), 0);
+    recv_len = recv(sock, recv_buf, MAX_BUF, 0);
+    if( recv_len > 0 ){
+        SSL_load_error_strings();
+        SSL_library_init();
+        ctx = SSL_CTX_new(SSLv23_client_method());
+        ssl = SSL_new(ctx);
+        err = SSL_set_fd(ssl, sock);
+        SSL_connect(ssl);
+        sprintf(header, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n", uri_path, uri_hostname);
+        SSL_write(ssl, header, strlen(header));
+
+        int buf_size = 256;
+        char buf[buf_size];
+        int read_size;
+
+        do {
+             read_size = SSL_read(ssl, buf, buf_size);
+             //write(1, buf, read_size);
+        } while(read_size > 0);
+
+        end_time = clock();
+
+        if(strstr(buf, signature) != NULL){
+            printf("Success %dms %s:%s\n", 
+                   end_time - start_time, https_ipaddr, https_port);
+         }
+
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+        ERR_free_strings();
+    }
+
+    CONNECTION_END:
+    close(sock);
+}
+
+
 void uriparse(char *uri, char **uri_proto, char **uri_hostname, char **uri_path){
     const char *re = "^([^/]+?)://([^/]+?)/?(.*)$";
     regex_t regbuf;
@@ -212,9 +294,10 @@ int main(int argc, char *argv[]){
     FILE *fp;
     char line[MAX_BUF];
     char *uri_proto, *uri_hostname, *uri_ipaddr, *uri_path;
+    char mode[5];
     struct hostent* uri_hostent;
 
-    while((opts=getopt(argc, argv, "l:u:s:d")) != -1){
+    while((opts=getopt(argc, argv, "l:u:s:m:d")) != -1){
         switch(opts){
             case 'l':
                 target_list = optarg;
@@ -228,22 +311,21 @@ int main(int argc, char *argv[]){
             case 'd':
                 domain_resolution_flag = 1;
                 break;
+            case 'm':
+                strcpy(mode, optarg);
+                break;
             default:
                 printf("error! %c %c\n", opts, optarg);
                 exit(EXIT_SUCCESS);
         }
     }
 
-    if(target_list == NULL ||
-       uri == NULL ||
-       signature == NULL 
-    ){
-        printf("Usage %s -l list -u https_url -s signature [-d]\n", argv[0]);
-        printf("-l target list\n");
-        printf("-u https url\n");
-        printf("-s signature\n");
-        printf("-d domain resolution on socks proxy(Improvement of anonymity)\n");
-        exit(EXIT_SUCCESS);
+    if(target_list == NULL || uri == NULL || signature == NULL ){
+        usage();
+    }
+
+    if((strcmp("https", mode) != 0) && (strcmp("socks", mode) != 0)){
+        usage();
     }
 
     uriparse(uri, &uri_proto, &uri_hostname, &uri_path);
@@ -276,12 +358,19 @@ int main(int argc, char *argv[]){
     }
 
     while((fgets(line, MAX_BUF, fp)) != NULL){
-        char *socks_ipaddr, *socks_port;
+        char *target_ipaddr, *target_port;
         chomp(line);
-        socks_ipaddr = strtok(line, ":");
-        socks_port = strtok(NULL, ":");
-        scan(socks_ipaddr, socks_port, signature, uri_proto, 
-             uri_hostname, uri_ipaddr, uri_path, domain_resolution_flag);
+        target_ipaddr = strtok(line, ":");
+        target_port = strtok(NULL, ":");
+        if(strcmp("socks", mode) == 0){
+             socks_scan(target_ipaddr, target_port, signature, uri_proto, 
+                        uri_hostname, uri_ipaddr, uri_path, 
+                        domain_resolution_flag);
+        } 
+        if(strcmp("https", mode) == 0){
+             https_scan(target_ipaddr, target_port, signature, uri_proto, 
+                        uri_hostname, uri_ipaddr, uri_path);
+        } 
     } 
 
     free(uri_proto);
