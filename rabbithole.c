@@ -12,8 +12,32 @@
 #include <openssl/err.h>
 #include <regex.h>
 #include <time.h>
+#include <stdbool.h>
+#include <pthread.h>
 
 #define MAX_BUF 256
+#define THREAD_NUM 10
+pthread_mutex_t mutex;
+
+typedef struct node {
+    char *item;
+    struct node *next;
+} Node;
+
+typedef struct {
+    Node *top;
+} LinkList;
+
+typedef struct pthread_args{
+    char *mode;
+    char *signature;
+    char *uri_proto;
+    char *uri_hostname;
+    char *uri_ipaddr;
+    char *uri_path;
+    int domain_resolution_flag;
+    LinkList *list;
+} PTHREAD_ARGS;
 
 void usage(){
     printf("Usage RabbtHole -l list -u https_url -s signature -m [https|socks] [-d]\n");
@@ -25,6 +49,86 @@ void usage(){
     exit(EXIT_SUCCESS);
 } 
 
+Node *make_node(char *item, Node *node){
+    Node *new_node = malloc(sizeof(Node));
+    if(new_node != NULL){
+        new_node->item = malloc(strlen(item));
+        strcpy(new_node->item, item);
+        new_node->next = node;
+    }
+    return new_node;
+}
+
+LinkList *make_linklist(void){
+    LinkList *list = malloc(sizeof(LinkList));
+    if(list != NULL){
+       list->top = make_node("", NULL); 
+       if(list->top == NULL){
+         free(list);
+         return NULL;
+       }
+    }
+    return list;
+}
+
+void free_node(Node *node){
+    while(node != NULL){
+        Node *tmp = node->next;
+        free(node->item);
+        free(node);
+        node = tmp;
+    }
+}
+
+void free_linklist(LinkList *list){
+    free_node(list->top);
+    free(list);
+}
+
+Node *get_node(Node *node, int n){
+    int i;
+    for(i = -1; node != NULL; i++, node = node->next){
+        if(i == n) break;
+    }
+    return node;
+}
+
+char *get_item(LinkList *list, int n, bool *err){
+    Node *node = get_node(list->top, n);
+    if(node == NULL){
+        *err = 0;
+        return "";
+    } 
+    *err = 1;
+    return node->item;
+} 
+
+bool insert_node(LinkList *list, int n, char *item){
+    Node *node = get_node(list->top, n - 1);
+    if(node == NULL) return false;
+    node->next = make_node(item, node->next);
+    return true;
+}
+
+bool delete_node(LinkList *list, int n){
+    Node *node = get_node(list->top, n - 1);
+    if(node == NULL || node->next == NULL) return false;
+    Node *tmp = node->next;
+    node->next = node->next->next;
+    free(tmp);
+    return true;
+}
+
+bool push_node(LinkList *list, char *item){
+    return insert_node(list, 0, item);
+}
+
+char *pop_node(LinkList *list, bool *err){
+    char *item = get_item(list, 0, err);
+    if(*err) delete_node(list, 0);
+    return item;
+}
+
 void chomp(char *str){
     int len;
     len = strlen(str);
@@ -32,6 +136,18 @@ void chomp(char *str){
         str[len - 1] = '\0';
     }
     return;
+}
+
+bool empty_linklist(LinkList *list){
+    return list->top->next == NULL;
+}
+
+void print_linklist(LinkList *list){
+    printf("(\n");
+    Node *node;
+    for(node = list->top->next; node != NULL; node = node->next)
+        printf("\t%s\n", node->item);
+    printf(")\n");
 }
 
 void socks_scan(char *socks_ipaddr, char *socks_port, char *signature, 
@@ -46,6 +162,9 @@ void socks_scan(char *socks_ipaddr, char *socks_port, char *signature,
     SSL *ssl;
     SSL_CTX *ctx;
     clock_t start_time, end_time;
+
+    fprintf(stderr, "[+][%d]SOCKS v5 PROXY TARGET %s:%s\n", 
+            pthread_self(), socks_ipaddr, socks_port);
 
     start_time = clock();
 
@@ -142,7 +261,7 @@ void socks_scan(char *socks_ipaddr, char *socks_port, char *signature,
     end_time = clock();
 
     if(strstr(recv_buf, signature) != NULL){
-        printf("[SOCKS_PROXY] %dms %s:%s\n", 
+        printf("[*][FOUND SOCKS PROXY] %dms %s:%s\n", 
                 end_time - start_time, socks_ipaddr, socks_port);
     }
 
@@ -166,6 +285,9 @@ void https_scan(char *https_ipaddr, char *https_port, char *signature,
     SSL *ssl;
     SSL_CTX *ctx;
     clock_t start_time, end_time;
+
+    fprintf(stderr, "[+][%d] HTTPS PROXY SCAN TARGET %s:%s\n", 
+            pthread_self(), https_ipaddr, https_port);
 
     start_time = clock();
 
@@ -223,7 +345,7 @@ void https_scan(char *https_ipaddr, char *https_port, char *signature,
     end_time = clock();
 
     if(strstr(recv_buf, signature) != NULL){
-        printf("[HTTPS PROXY] %dms %s:%s\n", 
+        printf("[*][FOUND HTTPS PROXY] %dms %s:%s\n", 
                 end_time - start_time, https_ipaddr, https_port);
     }
 
@@ -235,7 +357,6 @@ void https_scan(char *https_ipaddr, char *https_port, char *signature,
     CONNECTION_END:
     close(sock);
 }
-
 
 void uriparse(char *uri, char **uri_proto, char **uri_hostname, char **uri_path){
     const char *re = "^([^/]+?)://([^/]+?)/?(.*)$";
@@ -294,6 +415,48 @@ void uriparse(char *uri, char **uri_proto, char **uri_hostname, char **uri_path)
     }
 }
 
+void *pthread_wrapper(void *p){
+    PTHREAD_ARGS *args = (PTHREAD_ARGS *)p;
+    char *target_ipaddr, *target_port;
+    char *item;
+    bool err;
+
+    while(!empty_linklist(args->list)){
+        pthread_mutex_lock(&mutex);
+        item = pop_node(args->list, &err);
+        pthread_mutex_unlock(&mutex);
+
+        target_ipaddr = strtok(item, ":");
+        target_port = strtok(NULL, ":");
+
+        if(strcmp("socks", args->mode) == 0){
+            socks_scan(
+                    target_ipaddr, 
+                    target_port, 
+                    args->signature, 
+                    args->uri_proto, 
+                    args->uri_hostname, 
+                    args->uri_ipaddr, 
+                    args->uri_path, 
+                    args->domain_resolution_flag
+                    );
+        } 
+        if(strcmp("https", args->mode) == 0){
+            https_scan(
+                    target_ipaddr, 
+                    target_port, 
+                    args->signature, 
+                    args->uri_proto, 
+                    args->uri_hostname, 
+                    args->uri_ipaddr, 
+                    args->uri_path
+                    );
+        } 
+    }
+
+    return;
+}
+
 int main(int argc, char *argv[]){
     int opts;
     int domain_resolution_flag = 0;
@@ -305,6 +468,9 @@ int main(int argc, char *argv[]){
     char *uri_proto, *uri_hostname, *uri_ipaddr, *uri_path;
     char mode[5];
     struct hostent* uri_hostent;
+    pthread_t pthread[THREAD_NUM];
+    PTHREAD_ARGS pargs;
+    int i = 0;
 
     while((opts=getopt(argc, argv, "l:u:s:m:d")) != -1){
         switch(opts){
@@ -339,6 +505,7 @@ int main(int argc, char *argv[]){
 
     uriparse(uri, &uri_proto, &uri_hostname, &uri_path);
 
+    fprintf(stderr, "[+] SCAN MODE : %s\n", mode);
     fprintf(stderr, "[+] TARGET_LIST : %s\n", target_list);
     fprintf(stderr, "[+] SIGNATURE : %s\n", signature);
     fprintf(stderr, "[+] URI : %s\n", uri);
@@ -366,26 +533,39 @@ int main(int argc, char *argv[]){
         exit(EXIT_FAILURE);
     }
 
-    while((fgets(line, MAX_BUF, fp)) != NULL){
-        char *target_ipaddr, *target_port;
-        chomp(line);
-        target_ipaddr = strtok(line, ":");
-        target_port = strtok(NULL, ":");
-        if(strcmp("socks", mode) == 0){
-             socks_scan(target_ipaddr, target_port, signature, uri_proto, 
-                        uri_hostname, uri_ipaddr, uri_path, 
-                        domain_resolution_flag);
-        } 
-        if(strcmp("https", mode) == 0){
-             https_scan(target_ipaddr, target_port, signature, uri_proto, 
-                        uri_hostname, uri_ipaddr, uri_path);
-        } 
-    } 
+    // generate LinkList
+    LinkList *list = make_linklist();
+    bool err;
 
+    while((fgets(line, MAX_BUF, fp)) != NULL){
+        chomp(line);
+        push_node(list, line);
+
+    } 
+    fclose(fp);
+
+    pargs.mode = mode;
+    pargs.signature = signature;
+    pargs.uri_proto = uri_proto;
+    pargs.uri_hostname = uri_hostname;
+    pargs.uri_ipaddr = uri_ipaddr;
+    pargs.uri_path = uri_path;
+    pargs.domain_resolution_flag = domain_resolution_flag;
+    pargs.list = list;
+
+    // generate thread
+    for(i=0; i<THREAD_NUM; i++){
+          pthread_create( &pthread[i], NULL, &pthread_wrapper, &pargs);
+    }
+    for(i=0; i<THREAD_NUM; i++){
+          pthread_join(pthread[i], NULL);
+    }
+
+    // print_linklist(list);
+    free_linklist(list);
     free(uri_proto);
     free(uri_hostname);
     free(uri_path);
-    fclose(fp);
 
     return 0;
 }
