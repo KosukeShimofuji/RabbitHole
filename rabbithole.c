@@ -1,3 +1,4 @@
+// gcc -o RabbitHole rabbithole.c -lssl -lcrypto -lpthread -g
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
