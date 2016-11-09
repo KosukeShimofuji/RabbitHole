@@ -17,7 +17,7 @@
 #include <pthread.h>
 
 #define MAX_BUF 256
-#define THREAD_NUM 10
+#define THREAD_NUM 50
 pthread_mutex_t mutex;
 
 typedef struct node {
@@ -164,7 +164,7 @@ void socks_scan(char *socks_ipaddr, char *socks_port, char *signature,
     SSL_CTX *ctx;
     clock_t start_time, end_time;
 
-    fprintf(stderr, "[+][%d]SOCKS v5 PROXY TARGET %s:%s\n", 
+    fprintf(stderr, "[+][tid=%08x]SOCKS v5 PROXY TARGET %s:%s\n", 
             pthread_self(), socks_ipaddr, socks_port);
 
     start_time = clock();
@@ -287,7 +287,7 @@ void https_scan(char *https_ipaddr, char *https_port, char *signature,
     SSL_CTX *ctx;
     clock_t start_time, end_time;
 
-    fprintf(stderr, "[+][%d] HTTPS PROXY SCAN TARGET %s:%s\n", 
+    fprintf(stderr, "[+][tid=%08x] HTTPS PROXY SCAN TARGET %s:%s\n", 
             pthread_self(), https_ipaddr, https_port);
 
     start_time = clock();
@@ -313,7 +313,7 @@ void https_scan(char *https_ipaddr, char *https_port, char *signature,
     sprintf(send_buf, 
             "CONNECT %s:%d HTTP/1.1\r\n"
             "Host: %s:%d\r\n"
-            "User-Agent: RabbitHole\r\n"
+            "User-Agent: Mozilla/5.0 (Android; Linux armv7l; rv:9.0)\r\n"
             "Proxy-Connection: Keep-Alive\r\n"
             "\r\n", 
             uri_hostname, 443, uri_hostname, 443);
@@ -472,6 +472,8 @@ int main(int argc, char *argv[]){
     pthread_t pthread[THREAD_NUM];
     PTHREAD_ARGS pargs;
     int i = 0;
+
+    setbuf(stdin, NULL);
 
     while((opts=getopt(argc, argv, "l:u:s:m:d")) != -1){
         switch(opts){
