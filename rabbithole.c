@@ -163,6 +163,7 @@ void socks_scan(char *socks_ipaddr, char *socks_port, char *signature,
     SSL *ssl;
     SSL_CTX *ctx;
     clock_t start_time, end_time;
+    int result;
 
     fprintf(stderr, "[+][tid=%08x]SOCKS v5 PROXY TARGET %s:%s\n", 
             pthread_self(), socks_ipaddr, socks_port);
@@ -257,11 +258,13 @@ void socks_scan(char *socks_ipaddr, char *socks_port, char *signature,
     do {
         recv_len = SSL_read(ssl, recv_buf, MAX_BUF);
         //write(1, recv_buf, recv_len);
+        if(strstr(recv_buf, signature) != NULL)
+            result = 1;
     } while(recv_len > 0);
 
     end_time = clock();
 
-    if(strstr(recv_buf, signature) != NULL){
+    if(result){
         printf("[*][FOUND SOCKS PROXY] %dms %s:%s\n", 
                 end_time - start_time, socks_ipaddr, socks_port);
     }
@@ -286,6 +289,7 @@ void https_scan(char *https_ipaddr, char *https_port, char *signature,
     SSL *ssl;
     SSL_CTX *ctx;
     clock_t start_time, end_time;
+    int result;
 
     fprintf(stderr, "[+][tid=%08x] HTTPS PROXY SCAN TARGET %s:%s\n", 
             pthread_self(), https_ipaddr, https_port);
@@ -341,11 +345,13 @@ void https_scan(char *https_ipaddr, char *https_port, char *signature,
     do {
         recv_len = SSL_read(ssl, recv_buf, MAX_BUF);
         //write(1, buf, read_size);
+        if(strstr(recv_buf, signature) != NULL)
+            result = 1;
     } while(recv_len > 0);
 
     end_time = clock();
 
-    if(strstr(recv_buf, signature) != NULL){
+    if(result){
         printf("[*][FOUND HTTPS PROXY] %dms %s:%s\n", 
                 end_time - start_time, https_ipaddr, https_port);
     }
