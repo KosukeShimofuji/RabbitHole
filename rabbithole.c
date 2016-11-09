@@ -473,7 +473,7 @@ int main(int argc, char *argv[]){
     PTHREAD_ARGS pargs;
     int i = 0;
 
-    setbuf(stdin, NULL);
+    setbuf(stdout, NULL);
 
     while((opts=getopt(argc, argv, "l:u:s:m:d")) != -1){
         switch(opts){
